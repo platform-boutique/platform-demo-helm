@@ -2,10 +2,38 @@ name: CI
 
 # Pull-request gate for the charts. Nothing runs on a plain push.
 #
-# Every job runs on every pull request (no path filter: a docs-only change is cheap and a skipped required check counts as passing) and
-# `gate` waits for all of them. `gate` is the ONE required status check of the branch protection; it fails when any job failed, was
-# cancelled, or was skipped without a reason it knows (a job downstream of a failed `lint-and-render` is skipped by GitHub, which a
-# required check would otherwise treat as a pass). Rules: the `gate` job at the end; test: .github/scripts/test-gate.py.
+# TWO LANES, chosen by the first job, `classify` (.github/scripts/classify-change.py, tested by test-classify-change.py):
+#
+#   image-only  the pull request changes exactly ONE envs/<env>/values/<app>.yaml and in it nothing but the image.tag / image.digest /
+#               `# vX.Y.Z` lines: the automation's image bump (branch promote/<app>/<env> or rollback/<app>/<env>). The charts, schemas,
+#               policies and workflows cannot have changed, so the render, kubeconform, Trivy, Kyverno and workflow-lint jobs are
+#               SKIPPED. Still run: the promotion policy (with its self-tests), the secret scan and the Cosign check of the changed
+#               digest(s) only (verify-signatures.sh --images).
+#   full        everything else (a chart, a policy, a script, a workflow, docs, common.yaml, a new or deleted values file, any other
+#               line, more than one file, ANY doubt or error of the classifier, a manual run): every job runs, the Cosign check
+#               verifies every image of every environment as before.
+#
+#   job                 image-only   full
+#   classify            runs         runs
+#   promotion-policy    runs         runs   (skipped on a manual run: it needs a pull request)
+#   secret-scan         runs         runs
+#   verify-signatures   changed only every image
+#   lint-and-render     skipped      runs
+#   kubeconform         skipped      runs
+#   trivy-config        skipped      runs
+#   kyverno-policies    skipped      runs
+#   workflows           skipped      runs
+#
+# Why the lane is decided INSIDE the workflow and not with `on.pull_request.paths`: when a whole workflow is skipped by a path filter its
+# checks stay "Pending" and block the merge forever, while a JOB skipped by an `if:` reports "Success" and so passes a required check.
+# Neither is a gate. Here the workflow always runs, `gate` always runs, and `gate` knows the expected result of every job PER LANE
+# (GitHub docs: "Troubleshooting required status checks" -> "Handling skipped but required checks"; "Using conditions to control job
+# execution"). A job that was skipped when the lane says it must run, a full-lane job that ran in the fast lane (the classifier output
+# was ignored), a failed or missing `classify`, or a lane value that is neither `image-only` nor `full` all fail the gate.
+#
+# `gate` is the ONE required status check of the branch protection. It fails when any job failed, was cancelled, or has a result that
+# the lane does not expect (a job downstream of a failed `lint-and-render` is skipped by GitHub, which a required check would otherwise
+# treat as a pass). Rules: the `gate` job at the end; test: .github/scripts/test-gate.py. No `merge_group` trigger (not used).
 on:
   pull_request:
     branches: [main]
@@ -27,11 +55,42 @@ env:
   KUBERNETES_VERSION: 1.33.0
 
 jobs:
+  # ─── which lane? ──────────────────────────────────────────────────────────
+
+  # Needs only a checkout with the whole history (the merge base) and no credentials. Always exits 0 with a lane; whatever it cannot
+  # prove to be an image pin is `full`. The script runs from the pull request's own checkout, like every other script of this workflow:
+  # a pull request that changes it (or this file) is `full` anyway, and changing the workflow files is what review and CODEOWNERS are for.
+  classify:
+    name: Classify the change
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    outputs:
+      lane: ${{ steps.classify.outputs.lane }} # image-only | full
+      images: ${{ steps.classify.outputs.images }} # image-only: repository@digest of the pinned image(s), for the Cosign check
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0 # the merge base with the target branch
+          persist-credentials: false
+
+      - name: Image pin only, or everything
+        id: classify
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          BASE_REF: origin/${{ github.base_ref }}
+          HEAD_REF: HEAD
+        run: python3 .github/scripts/classify-change.py
+
   # ─── helm lint + render ───────────────────────────────────────────────────
 
   lint-and-render:
     name: Helm lint & render
+    needs: [classify]
+    if: needs.classify.outputs.lane == 'full'
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     permissions:
       contents: read
     steps:
@@ -104,7 +163,9 @@ jobs:
   kubeconform:
     name: kubeconform
     runs-on: ubuntu-latest
-    needs: [lint-and-render]
+    needs: [classify, lint-and-render]
+    if: needs.classify.outputs.lane == 'full'
+    timeout-minutes: 10
     permissions:
       contents: read
     steps:
@@ -135,7 +196,9 @@ jobs:
   trivy-config:
     name: Trivy config scan
     runs-on: ubuntu-latest
-    needs: [lint-and-render]
+    needs: [classify, lint-and-render]
+    if: needs.classify.outputs.lane == 'full'
+    timeout-minutes: 15
     permissions:
       contents: read
     steps:
@@ -161,10 +224,15 @@ jobs:
 
   # ─── promotion gate ───────────────────────────────────────────────────────
 
+  # Runs in BOTH lanes. Fast lane: only the digest(s) the pull request pins (nothing else changed since the last full run, and every
+  # other image was verified when it was merged). Full lane: every image in the rendered charts, as before, so it waits for the render.
+  # The `if` is the usual "needs a job that may be skipped" form: GitHub skips a job whose needed job was skipped unless the `if`
+  # contains a status function; it names exactly the two cases in which this job must run, and `gate` checks that it did.
   verify-signatures:
     name: Cosign verify images
     runs-on: ubuntu-latest
-    needs: [lint-and-render]
+    needs: [classify, lint-and-render]
+    if: ${{ !cancelled() && needs.classify.result == 'success' && (needs.classify.outputs.lane == 'image-only' || needs.lint-and-render.result == 'success') }}
     timeout-minutes: 20 # 5 tries with backoff per image in the worst case (a registry outage)
     permissions:
       contents: read
@@ -174,6 +242,7 @@ jobs:
           persist-credentials: false
 
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        if: needs.classify.outputs.lane == 'full'
         with:
           name: rendered
           path: rendered
@@ -212,14 +281,26 @@ jobs:
           # product-catalog-db is a hand-built, unsigned image that stays a StatefulSet in the cluster for now (the shop moves to
           # another cluster later); this entry goes away if it is ever replaced by a signed image. Do not add other images here.
           UNSIGNED_ALLOWLIST: product-catalog-db
-        run: .github/scripts/verify-signatures.sh rendered
+          LANE: ${{ needs.classify.outputs.lane }}
+          IMAGES: ${{ needs.classify.outputs.images }}
+        run: |
+          case "$LANE" in
+            image-only) .github/scripts/verify-signatures.sh --images "$IMAGES" ;; # only what this pull request pins
+            full) .github/scripts/verify-signatures.sh rendered ;;                 # every image of every environment
+            *) echo "::error::lane '$LANE' is neither image-only nor full"; exit 1 ;;
+          esac
 
   # ─── admission policies ───────────────────────────────────────────────────
 
   kyverno-policies:
     name: Kyverno policy tests
     runs-on: ubuntu-latest
-    # No `needs`: it builds the dependencies and renders the environments itself and uses no artifact, so it starts at t=0.
+    # Waits only for `classify` (seconds): it builds the dependencies and renders the environments itself and uses no artifact, so it
+    # runs in parallel with the lint. (Sharing the render through an artifact was measured and is NOT cheaper: render-envs.py takes
+    # about 5 s, an artifact upload plus download about as much, and the job would then wait for the whole lint job.)
+    needs: [classify]
+    if: needs.classify.outputs.lane == 'full'
+    timeout-minutes: 15
     permissions:
       contents: read
     steps:
@@ -264,6 +345,7 @@ jobs:
     name: Promotion policy
     if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     permissions:
       contents: read
       pull-requests: read # to read the labels at run time (re-run the job after adding a label)
@@ -278,6 +360,10 @@ jobs:
 
       - name: Self-test of the promotion planning (promote.sh)
         run: .github/scripts/test-promote.sh
+
+      # Runs in both lanes: the classifier decides which checks a pull request gets, so its own test is never skipped.
+      - name: Self-test of the lane classifier
+        run: python3 .github/scripts/test-classify-change.py
 
       - name: Check the pull request
         env:
@@ -299,6 +385,8 @@ jobs:
     uses: platform-boutique/platform-demo-workflows/.github/workflows/secret-scan.yaml@28d80c1d4abd81c1529bf593a874640132692e8a # v2.0.2
 
   workflows:
+    needs: [classify]
+    if: needs.classify.outputs.lane == 'full'
     permissions:
       contents: read
     uses: platform-boutique/platform-demo-workflows/.github/workflows/workflow-lint.yaml@28d80c1d4abd81c1529bf593a874640132692e8a # v2.0.2
@@ -306,13 +394,16 @@ jobs:
   # ─── the one required check ───────────────────────────────────────────────
 
   # The ONLY required status check of the branch protection (name: `gate`). Waits for every other job and runs even when they fail
-  # (`always()`). A job that GitHub skipped because something upstream failed (everything behind `lint-and-render`) would count as a
-  # pass for a required check; here it is the failed job that is reported, first, and the gate fails. A skip that nothing explains
-  # fails too. The only legitimate skip: `Promotion policy` on a manual run (it needs a pull request).
-  # Add a job to this workflow => add it to `needs` here AND to the list in the script; .github/scripts/test-gate.py fails otherwise.
+  # (`always()`). It knows the expected result of every job PER LANE (`classify` output `lane`, read from `needs`):
+  #   image-only  the full-lane-only jobs must be `skipped`; a `success` there means the lane was ignored, and fails
+  #   full        every job must be `success`; a skipped job fails (a required check would count it as a pass)
+  # and it fails on a failed, cancelled or missing `classify`, and on a lane that is neither `image-only` nor `full`. A job that GitHub
+  # skipped because something upstream failed (everything behind `lint-and-render`) is a consequence: the failed job is reported, first.
+  # The only legitimate skip in the full lane: `Promotion policy` on a manual run (it needs a pull request); a manual run is always full.
+  # Add a job to this workflow => add it to `needs` here AND to the lists in the script; .github/scripts/test-gate.py fails otherwise.
   gate:
     name: gate
-    needs: [lint-and-render, kubeconform, trivy-config, verify-signatures, kyverno-policies, promotion-policy, secret-scan, workflows]
+    needs: [classify, lint-and-render, kubeconform, trivy-config, verify-signatures, kyverno-policies, promotion-policy, secret-scan, workflows]
     if: ${{ always() }}
     runs-on: ubuntu-latest
     timeout-minutes: 5
@@ -324,16 +415,18 @@ jobs:
           sparse-checkout: .github
           persist-credentials: false
 
-      - name: Self-test of the gate (all green, failed, cancelled, unexpected skip, missing job, ...)
+      - name: Self-test of the gate (both lanes, failed, cancelled, unexpected skip, ignored lane, missing job, ...)
         run: python3 .github/scripts/test-gate.py
 
-      - name: Every job passed, or was skipped for a reason we know
+      - name: Every job has the result its lane expects
         env:
           NEEDS: ${{ toJSON(needs) }}
           EVENT_NAME: ${{ github.event_name }}
         run: |
           # Jobs this workflow has, besides the gate. NEEDS holds the result of every one of them.
-          jobs=(lint-and-render kubeconform trivy-config verify-signatures kyverno-policies promotion-policy secret-scan workflows)
+          jobs=(classify lint-and-render kubeconform trivy-config verify-signatures kyverno-policies promotion-policy secret-scan workflows)
+          # The jobs that exist only in the full lane: skipped in the image-only lane, success in the full lane.
+          full_only=(lint-and-render kubeconform trivy-config kyverno-policies workflows)
 
           declare -A want
           for job in "${jobs[@]}"; do want[$job]=success; done
@@ -347,13 +440,34 @@ jobs:
             jq -e --arg job "$job" 'has($job)' <<< "$NEEDS" > /dev/null || { echo "::error::job $job is missing from needs"; exit 1; }
           done
 
+          # The lane. Only believed when classify succeeded; anything but the two known values is a problem of its own, and the
+          # expectations then stay those of the full lane (the strict ones).
+          lane=$(jq -r '.classify.outputs.lane // ""' <<< "$NEEDS")
+          classify_result=$(jq -r '.classify.result' <<< "$NEEDS")
+          lane_problem=""
+          if [ "$classify_result" = success ]; then
+            case "$lane" in
+              full) ;;
+              image-only)
+                if [ "$EVENT_NAME" != pull_request ]; then
+                  lane_problem="lane 'image-only' on a $EVENT_NAME run (only a pull request can be an image pin)"
+                else
+                  for job in "${full_only[@]}"; do want[$job]=skipped; done
+                fi
+                ;;
+              *) lane_problem="classify succeeded but its lane is '$lane', which is neither image-only nor full" ;;
+            esac
+          else
+            lane="(unknown: classify $classify_result)"
+          fi
+
           # Failed and cancelled jobs first: they are the cause. Everything downstream of a failed job is skipped by GitHub, and
           # that skip is a consequence, not a finding, so it is not reported as one.
           mapfile -t rows < <(jq -r 'to_entries | sort_by(.value.result == "failure" or .value.result == "cancelled" | not) | .[] | [.key, .value.result] | @tsv' <<< "$NEEDS")
           failed=0
           unexplained=0
           {
-            echo "### Gate ($EVENT_NAME)"
+            echo "### Gate ($EVENT_NAME, lane: $lane)"
             echo
           } >> "$GITHUB_STEP_SUMMARY"
           for row in "${rows[@]}"; do
@@ -366,6 +480,11 @@ jobs:
                 ;;
             esac
           done
+          if [ -n "$lane_problem" ]; then
+            unexplained=1
+            echo "::error::$lane_problem"
+            echo "- **$lane_problem**" >> "$GITHUB_STEP_SUMMARY"
+          fi
 
           {
             echo
@@ -379,7 +498,11 @@ jobs:
             echo "| $job | $result | $expected |" >> "$GITHUB_STEP_SUMMARY"
             # Only when nothing failed: otherwise the failure above is the cause and skipped jobs downstream of it are expected.
             if [ "$failed" = 0 ] && [ "$result" != "$expected" ]; then
-              echo "::error::$job is '$result', expected '$expected'"
+              if [ "$lane" = image-only ] && [ "$expected" = skipped ] && [ "$result" = success ]; then
+                echo "::error::$job ran in the image-only lane (expected 'skipped'): the classifier output was ignored"
+              else
+                echo "::error::$job is '$result', expected '$expected' (lane: $lane)"
+              fi
               unexplained=1
             fi
           done
