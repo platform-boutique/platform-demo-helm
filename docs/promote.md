@@ -96,26 +96,45 @@ to it. A rollback commit starts no promotion workflow, so nothing moves forward 
 
 ## What CI checks, and the one required check
 
-Every pull request runs the jobs below in parallel (no path filter: a skipped required check counts as passing, so nothing may be skipped).
-`gate` waits for all of them and fails when any job failed, was cancelled, or was skipped without a reason it knows (jobs behind a failed
-`Helm lint & render` are skipped by GitHub; the gate reports the failed job first instead). **The branch protection of `main` should require
-exactly one status check: `gate`.**
+The first job, `Classify the change`, decides the **lane** of the pull request (`.github/scripts/classify-change.py`):
 
-| Job (check name) | What it does |
-|---|---|
-| `Helm lint & render` | `helm lint`, render of every chart and environment (`render-envs.py`), the app dropdowns against the workloads (`check-dispatch-apps.py`) |
-| `kubeconform` | schema validation of everything rendered |
-| `Trivy config scan` | misconfiguration scan of the rendered charts |
-| `Cosign verify images` | every image of ours is pinned by digest and signed by an allowed workflow (below) |
-| `Kyverno policy tests` | the policy unit tests, the signer-identity tests, and every rendered app evaluated against the policies |
-| `Promotion policy` | which image changes a pull request may make (one environment per PR, stage from dev, prod from stage); also runs the self-tests of the promotion planning (`test-promote.sh`) |
-| `secret-scan / Secret Scan`, `workflows / Workflow lint` | shared workflows of platform-demo-workflows |
-| **`gate`** | the only required check |
+- **`image-only`** (the fast lane): exactly one changed file, `envs/<env>/values/<app>.yaml`, whose only changed lines are its
+  `image.tag` / `image.digest` / `# vX.Y.Z` lines in the form the promotion writes them, and nothing else (no added, deleted or renamed
+  file, no mode change, no symlink, no other line, no Windows line endings). That is what the automation's `promote/<app>/<env>` and
+  `rollback/<app>/<env>` pull requests are. The charts, schemas, policies and workflows cannot have changed, so the render, kubeconform,
+  Trivy, Kyverno and workflow-lint jobs are skipped. The promotion policy (with all its self-tests), the secret scan and the cosign check
+  of the pinned digest still run.
+- **`full`**: everything else, including a chart, a policy, a script, a workflow, docs, `common.yaml` or `workloads.yaml`, a new or
+  deleted values file, an image bump together with anything else, more than one file, a manual run, and **any doubt or error of the
+  classifier** (it fails closed). Every job runs and the cosign check verifies every image of every environment.
 
-Until the branch protection of `main` is switched to `gate` (Settings -> Branches, or the API), the eight checks above are listed there
-individually; once `gate` has run on a pull request it can be made the only required check and the other eight removed from the list.
-The self-tests are `.github/scripts/test-gate.py` (gate scenarios), `test-promotion-policy.sh`, `test-promote.sh` (what a promotion run decides), `test-verify-signatures.sh` and
-`signer-identities.py test`.
+| Job (check name) | image-only | full | What it does |
+|---|---|---|---|
+| `Classify the change` | runs | runs | the lane (a checkout with history, no credentials) |
+| `Promotion policy` | runs | runs | which image changes a pull request may make (one environment per PR, stage from dev, prod from stage); also the self-tests of the promotion planning (`test-promote.sh`), of the policy and of the classifier. Skipped on a manual run (needs a pull request) |
+| `secret-scan / Secret Scan` | runs | runs | shared workflow of platform-demo-workflows |
+| `Cosign verify images` | the changed digest(s) only | every image | every image of ours is pinned by digest and signed by an allowed workflow (below); `verify-signatures.sh --images` in the fast lane |
+| `Helm lint & render` | skipped | runs | `helm lint`, render of every chart and environment (`render-envs.py`), the app dropdowns against the workloads (`check-dispatch-apps.py`) |
+| `kubeconform` | skipped | runs | schema validation of everything rendered |
+| `Trivy config scan` | skipped | runs | misconfiguration scan of the rendered charts |
+| `Kyverno policy tests` | skipped | runs | the policy unit tests, the signer-identity tests, and every rendered app evaluated against the policies |
+| `workflows / Workflow lint` | skipped | runs | shared workflow of platform-demo-workflows (actionlint, SHA pins) |
+| **`gate`** | runs | runs | the only required check |
+
+**The lane is decided inside the workflow, not with `on.pull_request.paths`.** A workflow skipped by a path filter leaves its checks
+"Pending" and blocks the merge; a job skipped by an `if:` reports "Success", which a required check accepts (GitHub docs, "Troubleshooting
+required status checks", section "Handling skipped but required checks"). So a skip must never be trusted on its own: `gate` knows the
+expected result of every job per lane (`success` or `skipped`) and fails on any other combination. In particular it fails when a job that
+the lane skips ran (the classifier output was ignored), when a job the lane needs was skipped, when `classify` failed, was cancelled or
+returned a lane that is neither `image-only` nor `full`, and on a manual run that is not `full`. It reports the failed job first (jobs
+behind a failed job are skipped by GitHub; that is a consequence, not a finding).
+
+**The branch protection of `main` requires exactly one status check: `gate`** (read with the REST API on 2026-11-13: `contexts: ["gate"]`,
+not "up to date"). A job added to the workflow goes into `needs` of `gate` and into the lists in its script; `test-gate.py` fails otherwise.
+
+The self-tests are `.github/scripts/test-gate.py` (every lane and result combination, wiring), `test-classify-change.py` (what is an image
+pin and what is not; `--history N` also classifies the real promote commits of this repository), `test-promotion-policy.sh`,
+`test-promote.sh` (what a promotion run decides), `test-verify-signatures.sh` (including `--images`) and `signer-identities.py test`.
 
 ## Who may sign an image (the cosign identity policy)
 

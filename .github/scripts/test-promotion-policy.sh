@@ -126,7 +126,7 @@ if grep -q "no merge base" "$tmp/shallow.out" && grep -q "rc=1" "$tmp/shallow.ou
   )
   bad=0
   for c in "${cases[@]}"; do
-    m=$(img_mask <<< "$c" | wc -l); p=$(img_pins <<< "$c" | wc -l); t=$(printf '%s\n' "$c" | sed '/^$/d' | wc -l)
+    p=$(img_pins <<< "$c" | wc -l); t=$(printf '%s\n' "$c" | sed '/^$/d' | wc -l)
     a=$(img_mask <<< "$c" | sed '/^$/d' | wc -l)
     [ $((a + p)) -eq "$t" ] || { bad=1; echo "mask+pins != lines for: $c"; }
   done
