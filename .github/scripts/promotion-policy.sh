@@ -16,7 +16,8 @@
 # Needs the history of the base branch (checkout with fetch-depth: 0).
 # Environment: BASE_REF (default origin/main), HEAD_REF (default HEAD), HEAD_BRANCH (name of the PR branch, optional),
 #              LABELS (comma separated PR labels, optional).
-# Also sourceable: the img_* helpers read a values file on stdin (used by promote.sh, which the promotion workflows run).
+# Also sourceable: the img_* helpers read a values file on stdin (used by promote.sh, which the promotion workflows run, and by
+# classify-change.py, which decides the CI lane).
 
 # Block-style top-level `image:` key, direct children only. Prints the value of $1 (tag|digest) without quotes.
 img_get() {
@@ -62,6 +63,19 @@ img_mask() {
       }
     }
     { print }'
+}
+# The complement of img_mask: exactly the lines img_mask drops (the image.tag / image.digest lines, as written). Used by
+# classify-change.py to decide whether a change is only an image pin (same state machine, so the two cannot disagree).
+img_pins() {
+  awk '
+    /^image:[ \t]*(#.*)?$/ { inimg = 1; ind = -1; next }
+    inimg {
+      if ($0 ~ /^[ \t]*(#.*)?$/) next
+      match($0, /^[ \t]*/); n = RLENGTH
+      if (n == 0) { inimg = 0; next }
+      if (ind < 0) ind = n
+      if (n == ind && $0 ~ /^[ \t]+(tag|digest):/) print
+    }'
 }
 
 policy_main() {
