@@ -4,6 +4,8 @@ name: Stage release
 # <app>-vX.Y.Z on the merge commit. The release notes hold the image digest, so the version stays answerable after stage has moved on.
 # Idempotent: it looks at the last commits that touched envs/stage/values and creates only the releases that are missing, so it can
 # also be started by hand (Actions -> Stage release) when a push did not trigger it. An existing tag is never moved.
+# Best effort, like the release step of the application Publish run: a release that cannot be created (for example the 1.0.0 baseline of the
+# first commit, which never had a tag) is a warning annotation, not a failed run, and the remaining releases are still created.
 # Nothing is tagged in the application repositories.
 
 on:
@@ -42,6 +44,7 @@ jobs:
           # shellcheck source=/dev/null
           source .github/scripts/promotion-policy.sh
           created=0
+          failed=0
           # newest first; the last 30 commits that touched a stage values file are plenty
           while read -r sha; do
             [ -n "$sha" ] || continue
@@ -62,16 +65,20 @@ jobs:
                 continue
               fi
               image_tag=$(img_tag <<< "$content")
-              gh release create "$tag" --target "$sha" --latest=false --title "$app $version" --notes "$(
+              if ! gh release create "$tag" --target "$sha" --latest=false --title "$app $version" --notes "$(
                 echo "Stage release \`$version\` of \`$app\`."
                 echo
                 echo "- image: \`mladenovskistefan/$app@$digest\`${image_tag:+ (tag \`$image_tag\`)}"
                 echo "- helm commit: $GITHUB_SERVER_URL/$GH_REPO/commit/$sha"
                 echo
                 echo "Made by stage-release.yaml after the promotion to stage was merged. The application repositories are not tagged."
-              )"
+              )"; then
+                echo "::warning::Could not create release $tag at ${sha:0:7} (no tag is made; see the log above)."
+                failed=$((failed + 1))
+                continue
+              fi
               echo "::notice::Created release $tag at ${sha:0:7}."
               created=$((created + 1))
             done < <(git diff --name-only --no-renames "${parent:-$(git hash-object -t tree /dev/null)}" "$sha" -- 'envs/stage/values/*.yaml')
           done < <(git log -n 30 --format=%H -- 'envs/stage/values/*.yaml')
-          echo "Created $created release(s)."
+          echo "Created $created release(s), $failed could not be created (warnings)."
