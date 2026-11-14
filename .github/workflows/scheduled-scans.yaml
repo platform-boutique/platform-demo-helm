@@ -31,7 +31,7 @@ jobs:
       contents: read
       issues: write          # the one issue
       security-events: write # SARIF upload
-    uses: platform-boutique/platform-demo-workflows/.github/workflows/scheduled-image-scan.yaml@341f641320553ad73969b637ff125466e6b2d99c # v3.1.0
+    uses: platform-boutique/platform-demo-workflows/.github/workflows/scheduled-image-scan.yaml@ee7562da9860ad2c824ce50e6d56c1f62f1d3515 # v3.3.0
     with:
       include-third-party: ${{ inputs.include-third-party == true }}
       fail-on-findings: ${{ inputs.fail-on-findings == true }}
