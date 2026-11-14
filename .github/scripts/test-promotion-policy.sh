@@ -114,6 +114,28 @@ rm -rf "$tmp/shallow"; git clone -q --depth 1 --branch pr "file://$tmp/r" "$tmp/
 (cd "$tmp/shallow" && git fetch -q --depth 1 origin main:refs/remotes/origin/main 2> /dev/null; BASE_REF=origin/main HEAD_REF=HEAD "$script" > "$tmp/shallow.out" 2>&1; echo "rc=$?" >> "$tmp/shallow.out")
 if grep -q "no merge base" "$tmp/shallow.out" && grep -q "rc=1" "$tmp/shallow.out"; then pass=$((pass + 1)); echo "ok    shallow clone is an error"; else fail=$((fail + 1)); echo "FAIL  shallow clone"; cat "$tmp/shallow.out"; fi
 
+# 24 img_pins is the exact complement of img_mask (classify-change.py relies on it)
+(
+  # shellcheck source=promotion-policy.sh
+  source "$script"
+  cases=(
+    $'image:\n  tag: "x"\n  digest: sha256:aa   # v1.0.0\nreplicaCount: 1\n'
+    $'# c\nimage:   # trailing\n\n  # note\n  tag: x\n  digest: d\n  pullPolicy: Always\nother:\n  tag: y\n  digest: z\n'
+    $'sidecar:\n  digest: nope\nimage:\n    tag: deep\n    nested:\n      digest: inner\nnetworkPolicy: {}\n'
+    $'replicaCount: 1\n'
+  )
+  bad=0
+  for c in "${cases[@]}"; do
+    p=$(img_pins <<< "$c" | wc -l); t=$(printf '%s\n' "$c" | sed '/^$/d' | wc -l)
+    a=$(img_mask <<< "$c" | sed '/^$/d' | wc -l)
+    [ $((a + p)) -eq "$t" ] || { bad=1; echo "mask+pins != lines for: $c"; }
+  done
+  [ "$(img_pins <<< $'image:\n  tag: "x"\n  digest: sha256:aa   # v1.0.0\nreplicaCount: 1')" = $'  tag: "x"\n  digest: sha256:aa   # v1.0.0' ] || { bad=1; echo "img_pins output"; }
+  [ -z "$(img_pins <<< $'sidecar:\n  digest: nope\n')" ] || { bad=1; echo "img_pins outside image block"; }
+  exit $bad
+)
+if [ $? -eq 0 ]; then pass=$((pass + 1)); echo "ok    img_pins is the complement of img_mask"; else fail=$((fail + 1)); echo "FAIL  img_pins"; fi
+
 echo
 echo "$pass passed, $fail failed"
 [ "$fail" -eq 0 ]

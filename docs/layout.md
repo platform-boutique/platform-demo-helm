@@ -16,7 +16,7 @@ envs/{dev,stage,prod}/    the shop per environment: workloads.yaml (app list + n
 clusters/main/            the platform of the cluster: addons.yaml, values/{cluster-bootstrap (the namespace list),policies,external-secrets-config,platform-gateway,dex,backstage}.yaml
 gitops/                   app-of-apps: bootstrap/root.yaml (Terraform mirrors it), apps/ (AppProjects + one Application per layer), layers/{bootstrap,security,platform,workloads}/ (sync-wave ordered Applications and ApplicationSets), argocd/values.yaml, kyverno/values.yaml
 policies/                 Kyverno policies (CEL policy types) + tests; README explains each policy, rollout, exceptions, break-glass
-.github/                  ci.yaml (PR gate), scripts/ (render-envs.py, policy-check.sh, inject-namespaces.py), CODEOWNERS, dependabot.yml
+.github/                  ci.yaml (PR gate, two lanes), scripts/ (classify-change.py, render-envs.py, policy-check.sh, inject-namespaces.py), CODEOWNERS, dependabot.yml
 ```
 
 Every service chart is ~6 tiny template files that call into `platform-common` plus a fully commented `values.yaml`, so behaviour is identical everywhere and a fix in the library reaches all charts.

@@ -2,6 +2,11 @@
 # Every image of ours in the rendered charts must be pinned by digest and carry a keyless cosign signature from one of the workflows in
 # verifyImages.signers (policies/values.yaml; the same list the Kyverno policy enforces at admission).
 #   usage: .github/scripts/verify-signatures.sh <rendered-dir>
+#          .github/scripts/verify-signatures.sh --images '<repository>@sha256:<digest> ...'
+# The first form (full lane of the CI) verifies every image of ours found in the rendered charts. The second (fast lane: a pull request
+# that only pins an image, see classify-change.py) verifies exactly the listed images, and nothing else: each entry must be
+# mladenovskistefan/<name>@sha256:<64 hex>; anything else, and an empty list, fails (a silently dropped entry would be a silent pass).
+# The signature rules, the retries and the verdicts are the same in both forms.
 # Environment (all optional):
 #   UNSIGNED_ALLOWLIST  space separated image names that may have NO signature (never: a wrong signer, never: a registry error)
 #   ATTEMPTS            tries per image for transient errors (default 5)
@@ -14,7 +19,13 @@
 # Needs: cosign, jq, python3 + PyYAML (for the regexp).
 set -uo pipefail
 
-rendered=${1:?usage: verify-signatures.sh <rendered-dir>}
+usage='usage: verify-signatures.sh <rendered-dir> | --images "<repository>@sha256:<digest> ..."'
+rendered="" explicit=""
+case "${1:-}" in
+  --images) [ "$#" -eq 2 ] || { echo "::error::$usage"; exit 2; }; explicit=$2 ;;
+  "" | -*) echo "::error::$usage"; exit 2 ;;
+  *) [ "$#" -eq 1 ] || { echo "::error::$usage"; exit 2; }; rendered=$1 ;;
+esac
 cosign=${COSIGN:-cosign}
 attempts=${ATTEMPTS:-5}
 backoff=${BACKOFF:-3}
@@ -24,14 +35,23 @@ regexp=${SIGNER_REGEXP:-$(python3 "$(dirname "$0")/signer-identities.py" regexp)
 summary=${GITHUB_STEP_SUMMARY:-/dev/null}
 tmp=$(mktemp -d); trap 'rm -rf "$tmp"' EXIT
 
-images=$(grep -hE '^\s+image:' "$rendered"/*.yaml | sed -E 's/^\s*image:\s*//; s/"//g' | sort -u | grep '^mladenovskistefan/' || true)
-[ -n "$images" ] || { echo "::error::no application images found in the rendered charts"; exit 1; }
+if [ -n "$rendered" ]; then
+  images=$(grep -hE '^\s+image:' "$rendered"/*.yaml | sed -E 's/^\s*image:\s*//; s/"//g' | sort -u | grep '^mladenovskistefan/' || true)
+  [ -n "$images" ] || { echo "::error::no application images found in the rendered charts"; exit 1; }
+else
+  images=$(tr -s '[:space:]' '\n' <<< "$explicit" | sed '/^$/d' | sort -u) # whitespace separated; no globbing
+  [ -n "$images" ] || { echo "::error::--images: the list of images to verify is empty"; exit 1; }
+  while read -r ref; do
+    [[ "$ref" =~ ^mladenovskistefan/[a-z0-9][a-z0-9._-]*@sha256:[0-9a-f]{64}$ ]] \
+      || { echo "::error::--images: '$ref' is not mladenovskistefan/<name>@sha256:<64 hex>"; exit 1; }
+  done <<< "$images"
+fi
 
 # The one line that says why cosign failed: its "Error:" line, without the deprecation notice and the repeated final line.
 reason() { { grep -E '^Error' "$1" | head -1; } || true; }
 
 status=0
-{ echo "### Cosign verify"; echo; echo "| image | result | detail |"; echo "|---|---|---|"; } >> "$summary"
+{ echo "### Cosign verify"; echo; [ -z "$explicit" ] || { echo "Fast lane: only the image(s) this pull request pins."; echo; }; echo "| image | result | detail |"; echo "|---|---|---|"; } >> "$summary"
 row() { echo "| \`$1\` | $2 | $3 |" >> "$summary"; }
 
 for ref in $images; do
