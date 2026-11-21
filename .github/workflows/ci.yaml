@@ -98,7 +98,7 @@ jobs:
         with:
           persist-credentials: false
 
-      - uses: azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310 # v5.0.1
+      - uses: azure/setup-helm@2f5e7bc67f1f9972ab16657bb795f36d8f04de0e # v5.1.0
         with:
           version: ${{ env.HELM_VERSION }}
         env:
@@ -248,7 +248,7 @@ jobs:
           path: rendered
 
       - name: Install Cosign
-        uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
+        uses: sigstore/cosign-installer@756fe2d284c7292c4e9b62c8a28f1e5629c59532 # v4.1.3
         with:
           cosign-release: ${{ env.COSIGN_VERSION }}
 
@@ -308,7 +308,7 @@ jobs:
         with:
           persist-credentials: false
 
-      - uses: azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310 # v5.0.1
+      - uses: azure/setup-helm@2f5e7bc67f1f9972ab16657bb795f36d8f04de0e # v5.1.0
         with:
           version: ${{ env.HELM_VERSION }}
         env:
@@ -382,14 +382,14 @@ jobs:
     permissions:
       contents: read
       pull-requests: read
-    uses: platform-boutique/platform-demo-workflows/.github/workflows/secret-scan.yaml@ee7562da9860ad2c824ce50e6d56c1f62f1d3515 # v3.3.0
+    uses: platform-boutique/platform-demo-workflows/.github/workflows/secret-scan.yaml@9e7a60340fa0720de3fdd72147342e9f5abcbbd3 # v3.6.0
 
   workflows:
     needs: [classify]
     if: needs.classify.outputs.lane == 'full'
     permissions:
       contents: read
-    uses: platform-boutique/platform-demo-workflows/.github/workflows/workflow-lint.yaml@ee7562da9860ad2c824ce50e6d56c1f62f1d3515 # v3.3.0
+    uses: platform-boutique/platform-demo-workflows/.github/workflows/workflow-lint.yaml@9e7a60340fa0720de3fdd72147342e9f5abcbbd3 # v3.6.0
 
   # ─── the one required check ───────────────────────────────────────────────
 
