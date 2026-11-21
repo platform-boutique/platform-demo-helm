@@ -1,3 +1,3 @@
 image:
-  tag: "sha-11853f4"
-  digest: sha256:a56b022c8352195de09db3cda80e432d0373f239ac493ebff82f8921aa6dbbed   # v1.0.5
+  tag: "sha-68291d7"
+  digest: sha256:4c43615dcc175557b7645df23a542f50335020b281f7ff2b317c3976bd03641b   # v1.0.6
