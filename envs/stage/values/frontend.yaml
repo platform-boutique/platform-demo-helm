@@ -1,6 +1,6 @@
 image:
-  tag: "sha-b5ab458"
-  digest: sha256:ef8dd0c566dae68e7cda7920599ad81a93afe2ebcf78273dcf124e4f2c2b71af   # v1.0.6
+  tag: "sha-f389bb8"
+  digest: sha256:03f78a3e6bcbcbf314a4a9be08df546818c6eae80cdb80a59c853575ee9ededb   # v1.0.7
 networkPolicy:
   ingress:
     from: []
