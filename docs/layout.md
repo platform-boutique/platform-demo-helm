@@ -3,7 +3,7 @@
 ```
 platform-common/          library chart (templates only): Deployment, StatefulSet, Service, HPA, PDB, NetworkPolicy and
                           CiliumNetworkPolicy (networkPolicy.type), probes, security context helpers
-<service>/                10 Deployments + product-catalog-db / cart-redis StatefulSets; thin charts over platform-common
+<service>/                10 Deployments + product-catalog-db / cart-redis StatefulSets (and, not enabled yet, 4 more services + 4 databases + kafka); thin charts over platform-common
 platform-gateway/         Gateway (Cilium GatewayClass, plain HTTP on 8080 behind the ALB) and HTTPRoutes: shop (prod) + dev.shop + stage.shop, argocd, hubble, backstage, dex
 cluster-bootstrap/        namespaces with their labels (Pod Security, Kyverno profile, gVisor), RuntimeClass gvisor, the one-off SPIRE/Cilium restart Job
 platform-network-policies/ default-deny and allow rules (CiliumNetworkPolicy) for argocd, sso, backstage, gateway-system
