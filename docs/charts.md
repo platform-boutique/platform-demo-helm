@@ -26,7 +26,15 @@
 | product-catalog-service | Deployment | 3550 | frontend, checkout, recommendation | product-catalog-db |
 | recommendation-service | Deployment | 8080 | frontend | product-catalog |
 | shipping-service | Deployment | 50051 | frontend, checkout | — |
+| inventory-service | Deployment | 8087 | frontend, checkout | inventory-db |
+| order-service | Deployment | 8085 | frontend, checkout | order-db, kafka |
+| review-service | Deployment | 8084 | frontend | review-db |
+| user-service | Deployment | 8086 | frontend | user-db |
 | product-catalog-db | StatefulSet | 5432 | product-catalog-service | — |
+| inventory-db, order-db, review-db, user-db | StatefulSet | 5432 | their service | — |
+| kafka | StatefulSet | 9092 | checkout, order, email | — |
 | cart-redis | StatefulSet | 6379 | cart-service | — |
 
 Resource names equal the chart names on purpose: they are the DNS names the services are configured with (`cart-service:7070`, …). Install everything into one namespace, or override every `*_ADDR` with an FQDN.
+
+**Not wired in yet (state 2026-11-22):** `inventory-service`, `order-service`, `review-service`, `user-service`, their four databases (plain `postgres:17-alpine`, in-cluster like `product-catalog-db` until RDS) and a single-node `kafka` (KRaft, test grade) exist as charts only. They are in no `envs/<env>/workloads.yaml` yet, because the first signed images do not exist and `render-envs.py` needs an image digest per listed app. They are enabled in a second pull request once the images are published and the 12 database SecureStrings exist. `load-generator` is a batch tool (no port, no probes, exits after `RUN_TIME`) and has no chart on purpose: a Deployment would restart it forever and Kyverno requires probes.

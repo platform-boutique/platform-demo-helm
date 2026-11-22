@@ -59,6 +59,17 @@ shop:
     - { name: stage, namespace: stage-platform-demo, passwordPath: stage/product-catalog-db/postgres-password }
     - { name: dev,   namespace: dev-platform-demo,   passwordPath: dev/product-catalog-db/postgres-password }
 
+# The databases of inventory-, order-, review- and user-service (in-cluster StatefulSets, like product-catalog-db): one Secret per database and
+# environment, the password from its own SecureString <ssmPrefix>/[<env>/]<name>/postgres-password (prod has no env segment). OFF until the 12
+# SecureStrings exist (docs/secrets.md): an ExternalSecret whose parameter is missing stays unhealthy and would turn this Application red.
+shopDatabases:
+  enabled: false
+  databases:
+    - { name: inventory-db, database: inventory, user: inventory }
+    - { name: order-db,     database: orders,    user: orders }
+    - { name: review-db,    database: reviews,   user: reviews }
+    - { name: user-db,      database: users,     user: users }
+
 # Grafana is not deployed on AWS (yet): its OIDC client secret and the Backstage Grafana token are only read when this is true.
 grafana:
   enabled: false

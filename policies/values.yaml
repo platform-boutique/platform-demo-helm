@@ -31,11 +31,20 @@ identity:
     - currency-service
     - email-service
     - frontend
+    - inventory-db
+    - inventory-service
+    - kafka
+    - order-db
+    - order-service
     - payment-service
     - product-catalog-db
     - product-catalog-service
     - recommendation-service
+    - review-db
+    - review-service
     - shipping-service
+    - user-db
+    - user-service
 
 # Registry/repository allow-list per scope, as image() normalises them (Docker Hub = index.docker.io, library/ for
 # official images). An entry ending in "/" allows the whole prefix. Digests are required except for the listed repos.
@@ -45,6 +54,8 @@ images:
       - index.docker.io/mladenovskistefan/
       - index.docker.io/library/redis
       - index.docker.io/library/busybox
+      - index.docker.io/library/postgres
+      - index.docker.io/apache/kafka
     digestExempt: []
   platform:
     repositories:

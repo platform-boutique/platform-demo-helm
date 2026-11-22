@@ -1,0 +1,187 @@
+# kafka - single-node Apache Kafka (KRaft) for the orders.placed events (checkout publishes, order and email consume)
+# Defaults are production-leaning (HA, hardened, NetworkPolicy on). See ../platform-demo/values-dev.yaml for a lightweight profile.
+
+nameOverride: ""
+fullnameOverride: ""
+component: messaging
+
+# Shared with the umbrella chart (parent values override these).
+global:
+  imageRegistry: ""            # e.g. registry.example.com/mirror - prefixes every image
+  monitoring:
+    namespace: monitoring      # namespace of the observability stack (NetworkPolicy egress)
+    otlpEndpoint: http://alloy.monitoring.svc.cluster.local:4317   # OTLP/gRPC: traces, metrics, logs
+    pyroscopeAddr: http://alloy.monitoring.svc.cluster.local:4040  # profiles (Pyroscope push protocol, via Alloy)
+
+image:
+  registry: ""
+  repository: apache/kafka
+  tag: ""
+  digest: "sha256:852a0d49fc4e656b022e7f23785411802c9a088c78a7c5e39f33969de9c227a7"   # apache/kafka:4.3.2 (multi-arch index, 2026-11-22)
+  pullPolicy: IfNotPresent
+imagePullSecrets: []
+
+replicaCount: 1
+revisionHistoryLimit: 3
+minReadySeconds: 5
+progressDeadlineSeconds: 300
+podManagementPolicy: OrderedReady
+updateStrategy:
+  type: RollingUpdate
+terminationGracePeriodSeconds: 60
+preStopSleepSeconds: 0   # lets endpoints drain before SIGTERM
+
+serviceAccount:
+  create: true
+  name: ""
+  automount: false   # no API token in the pod
+  annotations: {}
+
+containerPorts:
+  - name: kafka
+    containerPort: 9092
+    protocol: TCP
+
+service:
+  type: ClusterIP
+  annotations: {}
+  ports:
+    - name: kafka
+      port: 9092
+      targetPort: kafka
+
+# Telemetry: OTLP/gRPC for traces+metrics+logs, Pyroscope push for profiles - both go to Alloy.
+telemetry:
+  k8sResourceAttributes: false   # adds k8s.pod.name / namespace / node via OTEL_RESOURCE_ATTRIBUTES
+
+# Plain environment. String values go through `tpl`, so {{ .Values... }} and $(VAR) work.
+env:
+  KAFKA_NODE_ID: "1"
+  KAFKA_PROCESS_ROLES: "broker,controller"
+  KAFKA_LISTENERS: "PLAINTEXT://:9092,CONTROLLER://:9093"
+  KAFKA_ADVERTISED_LISTENERS: "PLAINTEXT://kafka:9092"   # the Service name (fixed on purpose): reachable from the pods of the namespace only
+  KAFKA_CONTROLLER_LISTENER_NAMES: "CONTROLLER"
+  KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: "CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT"
+  KAFKA_CONTROLLER_QUORUM_VOTERS: "1@localhost:9093"
+  KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: "1"
+  KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: "1"
+  KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: "1"
+  KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: "0"
+  KAFKA_NUM_PARTITIONS: "3"            # topics (orders.placed) are created on first use
+  KAFKA_LOG_DIRS: "/var/lib/kafka/data/logs"
+  KAFKA_HEAP_OPTS: "-Xms128m -Xmx256m"
+
+secretEnv: []
+extraEnv: []
+envFrom: []
+initContainers: []
+
+startupProbe:
+  exec:
+    command: ["sh", "-c", "nc -z localhost 9092"]
+  periodSeconds: 3
+  timeoutSeconds: 3
+  failureThreshold: 40
+readinessProbe:
+  exec:
+    command: ["sh", "-c", "nc -z localhost 9092"]
+  periodSeconds: 5
+  timeoutSeconds: 3
+  failureThreshold: 3
+livenessProbe:
+  exec:
+    command: ["sh", "-c", "nc -z localhost 9092"]
+  periodSeconds: 10
+  timeoutSeconds: 3
+  failureThreshold: 6
+
+resources:
+  requests:
+    cpu: 100m
+    memory: 384Mi
+  limits:
+    cpu: "1"
+    memory: 768Mi
+
+# Pod/container hardening (restricted Pod Security Standard).
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 1000
+  runAsGroup: 1000
+  fsGroup: 1000
+  fsGroupChangePolicy: OnRootMismatch
+  seccompProfile:
+    type: RuntimeDefault
+securityContext:
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: true
+  capabilities:
+    drop: ["ALL"]
+
+# Writable scratch space for a read-only root filesystem.
+tmpVolume:
+  enabled: true
+  mountPath: /tmp
+  sizeLimit: 64Mi
+# The image writes its generated config and logs under /opt/kafka: read-only root file system + three writable scratch volumes
+# (checked with `docker run --read-only` on apache/kafka:4.3.2; the data directory is the PVC below).
+volumes:
+  - name: kafka-config
+    emptyDir: { sizeLimit: 8Mi }
+  - name: kafka-logs
+    emptyDir: { sizeLimit: 64Mi }
+volumeMounts:
+  - name: kafka-config
+    mountPath: /opt/kafka/config
+  - name: kafka-logs
+    mountPath: /opt/kafka/logs
+
+persistence:
+  enabled: true
+  mountPath: /var/lib/kafka/data
+  size: 2Gi
+  storageClassName: ""   # "" = cluster default, "-" = no class
+  accessModes: ["ReadWriteOnce"]
+  retentionPolicy:        # keep the data when the release is uninstalled or scaled down
+    whenDeleted: Retain
+    whenScaled: Retain
+
+autoscaling:
+  enabled: false
+
+# Single-replica stateful workload: a PDB would block node drains without adding availability.
+podDisruptionBudget:
+  enabled: false
+  maxUnavailable: 1
+
+topologySpread:
+  enabled: false
+  constraints: []
+
+# Zero-trust networking: only the listed callers may connect, only the listed dependencies may be reached.
+networkPolicy:
+  enabled: true
+  ingress:
+    from: [checkout-service, order-service, email-service]          # service names in this namespace
+    fromNamespaces: []
+    fromCIDRs: []
+    extra: []
+  egress:
+    enabled: true
+    dns: true
+    monitoring: false
+    monitoringPorts: []   # Alloy: OTLP/gRPC
+    to: []
+    extra: []
+
+ingress:
+  enabled: false
+
+podAnnotations: {}
+podLabels: {}
+annotations: {}
+commonLabels: {}
+priorityClassName: ""
+nodeSelector: {}
+tolerations: []
+affinity: {}

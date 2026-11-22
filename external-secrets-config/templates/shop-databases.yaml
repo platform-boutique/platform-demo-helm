@@ -1,0 +1,33 @@
+{{- if .Values.shopDatabases.enabled }}
+{{- range $db := .Values.shopDatabases.databases }}
+{{- range $.Values.shop.environments }}
+---
+# <namespace>/{{ $db.name }}-credentials: name, user and password of the {{ $db.name }} database of ONE environment, same pattern as the
+# product-catalog-db Secret (shop.yaml). Only the password is secret: it comes from the environment's own Parameter Store entry
+# ({{ $.Values.ssmPrefix }}/{{ if ne .name "prod" }}{{ .name }}/{{ end }}{{ $db.name }}/postgres-password).
+apiVersion: external-secrets.io/v1
+kind: ExternalSecret
+metadata:
+  name: {{ $db.name }}-credentials
+  namespace: {{ .namespace }}
+  labels:
+    {{- include "esc.labels" $ | nindent 4 }}
+    platform.demo/env: {{ .name }}
+  annotations:
+    argocd.argoproj.io/sync-wave: "1"
+spec:
+  refreshInterval: {{ $.Values.refreshInterval }}
+  secretStoreRef: { kind: ClusterSecretStore, name: aws-parameter-store }
+  target:
+    name: {{ $db.name }}-credentials
+    creationPolicy: Owner
+    template:
+      data:
+        POSTGRES_DB: {{ $db.database | quote }}
+        POSTGRES_USER: {{ $db.user | quote }}
+        POSTGRES_PASSWORD: {{ `{{ .password }}` | quote }}
+  data:
+    {{- include "esc.ssm" (dict "root" $ "key" "password" "path" (printf "%s%s/postgres-password" (ternary "" (printf "%s/" .name) (eq .name "prod")) $db.name)) | nindent 4 }}
+{{- end }}
+{{- end }}
+{{- end }}
