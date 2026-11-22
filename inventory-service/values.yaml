@@ -1,0 +1,215 @@
+# inventory-service - Inventory Service - stock levels and reservations backed by PostgreSQL (Go)
+# Defaults are production-leaning (HA, hardened, NetworkPolicy on). See ../platform-demo/values-dev.yaml for a lightweight profile.
+
+nameOverride: ""
+fullnameOverride: ""
+component: backend
+
+# Shared with the umbrella chart (parent values override these).
+global:
+  imageRegistry: ""            # e.g. registry.example.com/mirror - prefixes every image
+  monitoring:
+    namespace: monitoring      # namespace of the observability stack (NetworkPolicy egress)
+    otlpEndpoint: http://alloy.monitoring.svc.cluster.local:4317   # OTLP/gRPC: traces, metrics, logs
+    pyroscopeAddr: http://alloy.monitoring.svc.cluster.local:4040  # profiles (Pyroscope push protocol, via Alloy)
+
+image:
+  registry: ""
+  repository: mladenovskistefan/inventory-service
+  tag: ""                       # defaults to Chart.appVersion (build/push this tag, or set digest)
+  digest: ""                  # set per environment: envs/<env>/values/inventory-service.yaml
+  pullPolicy: IfNotPresent
+imagePullSecrets: []
+
+replicaCount: 2
+revisionHistoryLimit: 3
+minReadySeconds: 5
+progressDeadlineSeconds: 300
+strategy:
+  type: RollingUpdate
+  rollingUpdate:
+    maxSurge: 25%
+    maxUnavailable: 0   # never drop capacity during a rollout
+terminationGracePeriodSeconds: 30
+preStopSleepSeconds: 5   # lets endpoints drain before SIGTERM
+
+serviceAccount:
+  create: true
+  name: ""
+  automount: false   # no API token in the pod
+  annotations: {}
+
+containerPorts:
+  - name: grpc
+    containerPort: 8087
+    protocol: TCP
+
+service:
+  type: ClusterIP
+  annotations: {}
+  ports:
+    - name: grpc
+      port: 8087
+      targetPort: grpc
+      appProtocol: grpc
+
+# Telemetry: OTLP/gRPC for traces+metrics+logs, Pyroscope push for profiles - both go to Alloy.
+telemetry:
+  k8sResourceAttributes: true   # adds k8s.pod.name / namespace / node via OTEL_RESOURCE_ATTRIBUTES
+
+# Plain environment. String values go through `tpl`, so {{ .Values... }} and $(VAR) work.
+env:
+  OTEL_SERVICE_NAME: "inventory-service"
+  OTEL_EXPORTER_OTLP_ENDPOINT: "{{ .Values.global.monitoring.otlpEndpoint }}"
+  OTEL_EXPORTER_OTLP_PROTOCOL: "grpc"
+  SERVICE_VERSION: "{{ .Chart.AppVersion }}"
+  PORT: "8087"
+  ENABLE_PROFILING: "1"
+  PYROSCOPE_ADDR: "{{ .Values.global.monitoring.pyroscopeAddr }}"
+  DATABASE_URL: "postgres://$(DB_USER):$(DB_PASSWORD)@{{ .Values.database.host }}:{{ .Values.database.port }}/$(DB_NAME)?sslmode=disable"
+
+# Where the DB lives and which Secret holds its credentials (created by the inventory-db chart).
+database:
+  host: inventory-db
+  port: 5432
+  secretName: inventory-db-credentials   # keys: POSTGRES_USER, POSTGRES_PASSWORD, POSTGRES_DB
+
+secretEnv:
+  - name: DB_USER
+    secretName: "{{ .Values.database.secretName }}"
+    key: POSTGRES_USER
+  - name: DB_PASSWORD
+    secretName: "{{ .Values.database.secretName }}"
+    key: POSTGRES_PASSWORD
+  - name: DB_NAME
+    secretName: "{{ .Values.database.secretName }}"
+    key: POSTGRES_DB
+extraEnv: []
+envFrom: []
+
+# inventory-service exits if Postgres is unreachable at startup; wait for it instead of crash-looping.
+initContainers:
+  - name: wait-for-db
+    image: busybox:1.37.0@sha256:bdf57e528e45e4433820e045b29b4597825a1c9e38353532d90a01445013f82e
+    command: ["sh", "-c", "until nc -z -w 2 {{ .Values.database.host }} {{ .Values.database.port }}; do echo waiting for database; sleep 2; done"]
+    resources:
+      requests: { cpu: 10m, memory: 8Mi }
+      limits: { cpu: 50m, memory: 16Mi }
+    securityContext:
+      runAsNonRoot: true
+      runAsUser: 65534
+      runAsGroup: 65534
+      allowPrivilegeEscalation: false
+      readOnlyRootFilesystem: true
+      capabilities: { drop: ["ALL"] }
+      seccompProfile: { type: RuntimeDefault }
+
+startupProbe: null
+readinessProbe:
+  grpc:
+    port: 8087
+  periodSeconds: 5
+  timeoutSeconds: 3
+  failureThreshold: 3
+livenessProbe:
+  grpc:
+    port: 8087
+  periodSeconds: 10
+  timeoutSeconds: 3
+  failureThreshold: 3
+
+resources:
+  requests:
+    cpu: 50m
+    memory: 48Mi
+  limits:
+    cpu: "500m"
+    memory: 128Mi
+
+# Pod/container hardening (restricted Pod Security Standard).
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 10001
+  runAsGroup: 10001
+  seccompProfile:
+    type: RuntimeDefault
+securityContext:
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: true
+  capabilities:
+    drop: ["ALL"]
+
+# Writable scratch space for a read-only root filesystem.
+tmpVolume:
+  enabled: false
+  mountPath: /tmp
+  sizeLimit: 64Mi
+volumes: []
+volumeMounts: []
+
+# Horizontal Pod Autoscaler (needs metrics-server). Target is a % of the CPU *request*.
+autoscaling:
+  enabled: true
+  minReplicas: 2
+  maxReplicas: 5
+  targetCPUUtilizationPercentage: 70
+  targetMemoryUtilizationPercentage: null
+  behavior:
+    scaleDown:
+      stabilizationWindowSeconds: 300
+      policies:
+        - type: Pods
+          value: 1
+          periodSeconds: 60
+    scaleUp:
+      stabilizationWindowSeconds: 0
+      policies:
+        - type: Pods
+          value: 2
+          periodSeconds: 30
+
+# Keeps at least one pod serving during voluntary disruptions (node drains, upgrades).
+podDisruptionBudget:
+  enabled: true
+  maxUnavailable: 1
+  # minAvailable: 1
+
+# Spread replicas over zones and nodes (soft: never blocks scheduling on small clusters).
+topologySpread:
+  enabled: true
+  constraints:
+    - maxSkew: 1
+      topologyKey: topology.kubernetes.io/zone
+      whenUnsatisfiable: ScheduleAnyway
+    - maxSkew: 1
+      topologyKey: kubernetes.io/hostname
+      whenUnsatisfiable: ScheduleAnyway
+
+# Zero-trust networking: only the listed callers may connect, only the listed dependencies may be reached.
+networkPolicy:
+  enabled: true
+  ingress:
+    from: [frontend, checkout-service]          # service names in this namespace
+    fromNamespaces: []
+    fromCIDRs: []
+    extra: []
+  egress:
+    enabled: true
+    dns: true
+    monitoring: true
+    monitoringPorts: [4317, 4040]   # Alloy: OTLP/gRPC, Pyroscope
+    to:
+      - { name: inventory-db, port: 5432 }
+    extra: []
+
+ingress:
+  enabled: false
+
+podAnnotations: {}
+podLabels: {}
+annotations: {}
+commonLabels: {}
+priorityClassName: ""
+nodeSelector: {}
+tolerations: []
+affinity: {}
