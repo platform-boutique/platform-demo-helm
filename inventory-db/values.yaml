@@ -1,0 +1,196 @@
+# inventory-db - PostgreSQL 17 for the inventory-service (plain postgres:17-alpine: the service runs its own migrations)
+# Defaults are production-leaning (HA, hardened, NetworkPolicy on). See ../platform-demo/values-dev.yaml for a lightweight profile.
+
+nameOverride: ""
+fullnameOverride: ""
+component: database
+
+# Shared with the umbrella chart (parent values override these).
+global:
+  imageRegistry: ""            # e.g. registry.example.com/mirror - prefixes every image
+  monitoring:
+    namespace: monitoring      # namespace of the observability stack (NetworkPolicy egress)
+    otlpEndpoint: http://alloy.monitoring.svc.cluster.local:4317   # OTLP/gRPC: traces, metrics, logs
+    pyroscopeAddr: http://alloy.monitoring.svc.cluster.local:4040  # profiles (Pyroscope push protocol, via Alloy)
+
+image:
+  registry: ""
+  repository: postgres
+  tag: ""                       # defaults to Chart.appVersion (the digest wins)
+  digest: "sha256:f9cf3e1f0066f0eb0c48707d864f0ac5941e9ff454a072077d97a4d278d07d73"   # postgres:17-alpine (multi-arch index, 2026-11-22); the user is postgres = uid 70
+  pullPolicy: IfNotPresent
+imagePullSecrets: []
+
+replicaCount: 1
+revisionHistoryLimit: 3
+minReadySeconds: 5
+progressDeadlineSeconds: 300
+podManagementPolicy: OrderedReady
+updateStrategy:
+  type: RollingUpdate
+terminationGracePeriodSeconds: 60
+preStopSleepSeconds: 0   # lets endpoints drain before SIGTERM
+
+serviceAccount:
+  create: true
+  name: ""
+  automount: false   # no API token in the pod
+  annotations: {}
+
+containerPorts:
+  - name: postgres
+    containerPort: 5432
+    protocol: TCP
+
+service:
+  type: ClusterIP
+  annotations: {}
+  ports:
+    - name: postgres
+      port: 5432
+      targetPort: postgres
+
+# Telemetry: OTLP/gRPC for traces+metrics+logs, Pyroscope push for profiles - both go to Alloy.
+telemetry:
+  k8sResourceAttributes: false   # adds k8s.pod.name / namespace / node via OTEL_RESOURCE_ATTRIBUTES
+
+# Plain environment. String values go through `tpl`, so {{ .Values... }} and $(VAR) work.
+env:
+  PGDATA: "/var/lib/postgresql/data/pgdata"
+
+# Credentials come from a Secret. Use auth.existingSecret (recommended: SealedSecrets / External Secrets),
+# or set auth.password and the chart creates the Secret for you.
+auth:
+  existingSecret: ""           # Secret with keys POSTGRES_DB, POSTGRES_USER, POSTGRES_PASSWORD
+  secretName: inventory-db-credentials   # name of the Secret created when existingSecret is empty
+  database: inventory
+  username: inventory
+  password: ""                 # required when existingSecret is empty (alphanumeric: it is embedded in a URL)
+
+secretEnv:
+  - name: POSTGRES_DB
+    secretName: "{{ .Values.auth.existingSecret | default .Values.auth.secretName }}"
+    key: POSTGRES_DB
+  - name: POSTGRES_USER
+    secretName: "{{ .Values.auth.existingSecret | default .Values.auth.secretName }}"
+    key: POSTGRES_USER
+  - name: POSTGRES_PASSWORD
+    secretName: "{{ .Values.auth.existingSecret | default .Values.auth.secretName }}"
+    key: POSTGRES_PASSWORD
+extraEnv: []
+envFrom: []
+
+initContainers: []
+
+startupProbe:
+  exec:
+    command:
+      - "sh"
+      - "-c"
+      - "pg_isready -U \"$POSTGRES_USER\" -d \"$POSTGRES_DB\""
+  periodSeconds: 3
+  timeoutSeconds: 5
+  failureThreshold: 40
+readinessProbe:
+  exec:
+    command:
+      - "sh"
+      - "-c"
+      - "pg_isready -U \"$POSTGRES_USER\" -d \"$POSTGRES_DB\""
+  periodSeconds: 5
+  timeoutSeconds: 5
+  failureThreshold: 6
+livenessProbe:
+  exec:
+    command:
+      - "sh"
+      - "-c"
+      - "pg_isready -U \"$POSTGRES_USER\" -d \"$POSTGRES_DB\""
+  periodSeconds: 10
+  timeoutSeconds: 5
+  failureThreshold: 6
+
+resources:
+  requests:
+    cpu: 100m
+    memory: 256Mi
+  limits:
+    cpu: "1"
+    memory: 512Mi
+
+# Pod/container hardening (restricted Pod Security Standard).
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 70
+  runAsGroup: 70
+  fsGroup: 70
+  fsGroupChangePolicy: OnRootMismatch
+  seccompProfile:
+    type: RuntimeDefault
+securityContext:
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: true
+  capabilities:
+    drop: ["ALL"]
+
+# Writable scratch space for a read-only root filesystem.
+tmpVolume:
+  enabled: true
+  mountPath: /tmp
+  sizeLimit: 64Mi
+volumes:
+  - name: pg-run
+    emptyDir: { sizeLimit: 8Mi }
+volumeMounts:
+  - name: pg-run
+    mountPath: /var/run/postgresql
+
+persistence:
+  enabled: true
+  mountPath: /var/lib/postgresql/data
+  size: 2Gi
+  storageClassName: ""   # "" = cluster default, "-" = no class
+  accessModes: ["ReadWriteOnce"]
+  retentionPolicy:        # keep the data when the release is uninstalled or scaled down
+    whenDeleted: Retain
+    whenScaled: Retain
+
+autoscaling:
+  enabled: false
+
+# Single-replica stateful workload: a PDB would block node drains without adding availability.
+podDisruptionBudget:
+  enabled: false
+  maxUnavailable: 1
+
+topologySpread:
+  enabled: false
+  constraints: []
+
+# Zero-trust networking: only the listed callers may connect, only the listed dependencies may be reached.
+networkPolicy:
+  enabled: true
+  ingress:
+    from: [inventory-service]          # service names in this namespace
+    fromNamespaces: []
+    fromCIDRs: []
+    extra: []
+  egress:
+    enabled: true
+    dns: true
+    monitoring: false
+    monitoringPorts: []   # Alloy: OTLP/gRPC
+    to: []
+    extra: []
+
+ingress:
+  enabled: false
+
+podAnnotations: {}
+podLabels: {}
+annotations: {}
+commonLabels: {}
+priorityClassName: ""
+nodeSelector: {}
+tolerations: []
+affinity: {}

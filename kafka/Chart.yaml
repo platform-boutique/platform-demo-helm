@@ -1,0 +1,14 @@
+apiVersion: v2
+name: kafka
+description: Single-node Apache Kafka (KRaft) for the orders.placed events
+type: application
+version: 0.2.0
+appVersion: "4.3.2"
+kubeVersion: ">=1.27.0-0"
+keywords: [platform-demo, messaging]
+maintainers:
+  - name: mladenovskistefan111
+dependencies:
+  - name: platform-common
+    version: 0.1.0
+    repository: file://../platform-common

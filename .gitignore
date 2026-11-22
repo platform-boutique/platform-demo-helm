@@ -13,6 +13,15 @@
 /product-catalog-service/charts/*.tgz
 /recommendation-service/charts/*.tgz
 /shipping-service/charts/*.tgz
+/inventory-db/charts/*.tgz
+/inventory-service/charts/*.tgz
+/kafka/charts/*.tgz
+/order-db/charts/*.tgz
+/order-service/charts/*.tgz
+/review-db/charts/*.tgz
+/review-service/charts/*.tgz
+/user-db/charts/*.tgz
+/user-service/charts/*.tgz
 .DS_Store
 
 # Never commit key material or environment files
